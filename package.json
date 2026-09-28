@@ -1,0 +1,13 @@
+{
+  "name": "mail-bg-tests",
+  "version": "1.0.0",
+  "description": "Playwright UI tests for mail.bg",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "test:debug": "npx playwright test --debug"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
