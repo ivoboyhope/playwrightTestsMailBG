@@ -10,6 +10,7 @@ module.exports = defineConfig({
   reporter: 'html',
   use: {
     baseURL: 'https://mail.bg',
+    headless: true,
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     trace: 'on-first-retry',

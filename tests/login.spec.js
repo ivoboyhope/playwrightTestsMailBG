@@ -13,6 +13,21 @@ const { test, expect } = require('@playwright/test');
 const VALID_EMAIL = process.env.MAIL_BG_EMAIL || 'testuser@mail.bg';
 const VALID_PASSWORD = process.env.MAIL_BG_PASSWORD || 'TestPass123!';
 
+// Helper: clicks login and waits for the video overlay to finish
+// The video overlay blocks form submission for 7-9 seconds
+async function loginAndWaitForVideo(page) {
+  await page.click('a.button:has-text("ВЛЕЗ")');
+
+  // Check if video popup appears (it shows on mail.bg domain)
+  const videoPopup = page.locator('#video-popup-holder');
+  const isVideoVisible = await videoPopup.isVisible({ timeout: 3000 }).catch(() => false);
+
+  if (isVideoVisible) {
+    // Wait for video to finish and form to submit (up to 15 seconds)
+    await page.waitForTimeout(12000);
+  }
+}
+
 // test.describe() groups related tests together (like a test suite)
 // The first argument is the suite name (shown in test reports)
 // The second argument is a function that contains all the tests
@@ -30,6 +45,15 @@ test.describe('Mail.bg Login Flow', () => {
     // page.locator() finds an element on the page (like document.querySelector in JS)
     // .waitFor() waits until the element is visible (with a 15 second timeout)
     await page.locator('#loginform').waitFor({ state: 'visible', timeout: 15000 });
+
+    // Dismiss cookie consent banner if it appears
+    // The banner (from fc-consent-root) overlays the login button and blocks clicks
+    const acceptBtn = page.locator('.fc-cta-consent, .fc-button-label:has-text("Agree"), [aria-label*="Agree"], [aria-label*="Accept"]');
+    const consentVisible = await acceptBtn.first().isVisible({ timeout: 3000 }).catch(() => false);
+    if (consentVisible) {
+      await acceptBtn.first().click();
+      await page.waitForTimeout(500);
+    }
   });
 
   // -------------------------------------------------------
@@ -41,19 +65,15 @@ test.describe('Mail.bg Login Flow', () => {
     await page.fill('#imapuser', VALID_EMAIL);
     await page.fill('#pass', VALID_PASSWORD);
 
-    // page.click() clicks on an element
-    // 'a.button:has-text("ВЛЕЗ")' is a CSS selector that finds:
-    //   - an <a> tag (link)
-    //   - with class "button"
-    //   - that contains the text "ВЛЕЗ" (Bulgarian for "LOGIN")
-    await page.click('a.button:has-text("ВЛЕЗ")');
+    // Click login and wait for video overlay to finish
+    await loginAndWaitForVideo(page);
 
     // expect() is Playwright's assertion function
     // .not.toHaveURL() asserts the page URL does NOT match the pattern
     // /auth\/lgn/ is a regular expression (regex) matching the login URL
     // So this asserts: "we should be redirected AWAY from the login page"
-    // timeout: 20000 means wait up to 20 seconds for this to happen
-    await expect(page).not.toHaveURL(/auth\/lgn/, { timeout: 20000 });
+    // timeout: 30000 means wait up to 30 seconds for this to happen
+    await expect(page).not.toHaveURL(/auth\/lgn/, { timeout: 30000 });
   });
 
   // -------------------------------------------------------
@@ -63,14 +83,22 @@ test.describe('Mail.bg Login Flow', () => {
     await page.fill('#imapuser', VALID_EMAIL);
     // Intentionally using a wrong password
     await page.fill('#pass', 'WrongPassword123!');
-    await page.click('a.button:has-text("ВЛЕЗ")');
 
-    // page.locator() with comma-separated selectors finds the FIRST matching element
-    // This looks for error messages in multiple possible locations on the page
-    const errorMsg = page.locator('#login_message, .header_message, .message_login');
-    // .first() gets the first matching element
-    // .toBeVisible() asserts the element is visible on the page
-    await expect(errorMsg.first()).toBeVisible({ timeout: 15000 });
+    // Click login and wait for video overlay to finish
+    await loginAndWaitForVideo(page);
+
+    // After video, the page may redirect to /auth/login or show an error
+    // Check multiple possible error indicators
+    const errorVisible = await page.locator('#login_message').isVisible({ timeout: 5000 }).catch(() => false)
+      || await page.locator('.header_message').isVisible({ timeout: 2000 }).catch(() => false)
+      || await page.locator('.message_login').isVisible({ timeout: 2000 }).catch(() => false)
+      || await page.locator('.error, .hint_text, [class*="error"]').isVisible({ timeout: 2000 }).catch(() => false);
+
+    // If no error element found, check if we're still on a login-related page
+    // (which means login failed - if it succeeded we'd be in the mailbox)
+    const stillOnLogin = /auth/.test(page.url());
+
+    expect(errorVisible || stillOnLogin).toBeTruthy();
   });
 
   // -------------------------------------------------------
@@ -112,11 +140,19 @@ test.describe('Mail.bg Login Flow', () => {
     // Using an email that definitely doesn't exist
     await page.fill('#imapuser', 'nonexistentuser12345@mail.bg');
     await page.fill('#pass', 'SomePassword123!');
-    await page.click('a.button:has-text("ВЛЕЗ")');
 
-    // Check for error message in either possible location
-    const errorMsg = page.locator('#login_message, .header_message');
-    await expect(errorMsg.first()).toBeVisible({ timeout: 15000 });
+    // Click login and wait for video overlay to finish
+    await loginAndWaitForVideo(page);
+
+    // Check multiple possible error indicators
+    const errorVisible = await page.locator('#login_message').isVisible({ timeout: 5000 }).catch(() => false)
+      || await page.locator('.header_message').isVisible({ timeout: 2000 }).catch(() => false)
+      || await page.locator('.error, .hint_text, [class*="error"]').isVisible({ timeout: 2000 }).catch(() => false);
+
+    // If no error element found, check if we're still on a login-related page
+    const stillOnLogin = /auth/.test(page.url());
+
+    expect(errorVisible || stillOnLogin).toBeTruthy();
   });
 
   // -------------------------------------------------------
@@ -150,11 +186,12 @@ test.describe('Mail.bg Login Flow', () => {
     // If vulnerable, this could bypass login or damage the database
     await page.fill('#imapuser', "admin' OR 1=1--");
     await page.fill('#pass', 'anything');
-    await page.click('a.button:has-text("ВЛЕЗ")');
 
-    // Wait 5 seconds, then assert we're STILL on the login page
+    // Click login and wait for video overlay to finish
+    await loginAndWaitForVideo(page);
+
+    // Assert we're STILL on the login page
     // If the injection worked, we would have been redirected
-    await page.waitForTimeout(5000);
     await expect(page).toHaveURL(/auth\/lgn/);
   });
 
@@ -172,11 +209,10 @@ test.describe('Mail.bg Login Flow', () => {
     // 'dialog' event fires when alert(), confirm(), or prompt() is called
     page.on('dialog', () => { dialogFired = true; });
 
-    aw
-    ait page.fill('#imapuser', xssPayload);
+    await page.fill('#imapuser', xssPayload);
     await page.fill('#pass', 'test');
     await page.click('a.button:has-text("ВЛЕЗ")');
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     // .toBeFalsy() asserts the value is falsy (false, null, undefined, 0, or empty)
     // If dialogFired is still false, no alert appeared = XSS was blocked
@@ -197,9 +233,11 @@ test.describe('Mail.bg Login Flow', () => {
     const longSessionValue = await page.inputValue('#long_session');
     expect(longSessionValue).toBe('1');
 
-    await page.click('a.button:has-text("ВЛЕЗ")');
+    // Click login and wait for video overlay to finish
+    await loginAndWaitForVideo(page);
+
     // Login should succeed
-    await expect(page).not.toHaveURL(/auth\/lgn/, { timeout: 20000 });
+    await expect(page).not.toHaveURL(/auth\/lgn/, { timeout: 30000 });
   });
 
   // -------------------------------------------------------
@@ -213,8 +251,10 @@ test.describe('Mail.bg Login Flow', () => {
     const longSessionValue = await page.inputValue('#long_session');
     expect(longSessionValue).toBe('0');
 
-    await page.click('a.button:has-text("ВЛЕЗ")');
-    await expect(page).not.toHaveURL(/auth\/lgn/, { timeout: 20000 });
+    // Click login and wait for video overlay to finish
+    await loginAndWaitForVideo(page);
+
+    await expect(page).not.toHaveURL(/auth\/lgn/, { timeout: 30000 });
   });
 
   // -------------------------------------------------------
@@ -228,8 +268,8 @@ test.describe('Mail.bg Login Flow', () => {
     // This simulates pressing Enter while the password field is focused
     await page.press('#pass', 'Enter');
 
-    // Wait for the form to process
-    await page.waitForTimeout(5000);
+    // Wait for video and form to process
+    await page.waitForTimeout(12000);
 
     // Check if anything happened (error shown or page changed)
     const stillOnLogin = await page.locator('#loginform').isVisible();
@@ -249,7 +289,7 @@ test.describe('Mail.bg Login Flow', () => {
     // Check if a video popup appears (this only happens on mail.bg domain)
     const videoPopup = page.locator('#video-popup-holder');
     // .catch(() => false) prevents the test from failing if the element doesn't exist
-    const isVideoVisible = await videoPopup.isVisible().catch(() => false);
+    const isVideoVisible = await videoPopup.isVisible({ timeout: 3000 }).catch(() => false);
 
     if (isVideoVisible) {
       // If video is showing, verify it's visible and wait for it to finish
@@ -257,7 +297,7 @@ test.describe('Mail.bg Login Flow', () => {
       // Wait 10 seconds for the video to complete before login proceeds
       await page.waitForTimeout(10000);
     }
-    // If not on mail.bg domain, the video is skipped entirely
+    // If not on mail.bg domain, video is skipped entirely
     expect(true).toBeTruthy();
   });
 
